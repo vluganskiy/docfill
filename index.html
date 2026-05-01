@@ -947,12 +947,12 @@ async function downloadOfflineBundle() {
     let html = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
 
     // Заменяем каждый <script src="CDN"> на <script>код</script>
+    // ВАЖНО: нельзя писать </script> литерально внутри <script> — браузер закрывает тег
+    const closeScript = '<' + '/script>';
     for (const lib of CDN.slice(0, 3)) { // jszip, mammoth, pdfjs (не worker)
-      const srcTag = new RegExp(
-        `<script\\s+src="${lib.url.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}"><\\/script>`,
-        'g'
-      );
-      html = html.replace(srcTag, `<script>\n${scripts[lib.url]}\n</script>`);
+      const escaped = lib.url.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+      const srcTag = new RegExp('<script\\s+src="' + escaped + '">' + closeScript, 'g');
+      html = html.replace(srcTag, '<script>\n' + scripts[lib.url] + '\n' + closeScript);
     }
 
     // pdf.worker встраиваем как Blob-URL прямо в код инициализации
