@@ -320,6 +320,11 @@ input[type="file"] { display: none; }
   <h1>Doc<span>Fill</span></h1>
   <p>Автоматически заполняй документы данными из других файлов</p>
   <div class="privacy-badge">🔒 Всё в браузере — данные не покидают устройство</div>
+  <div style="margin-top:12px;">
+    <button class="btn btn-secondary btn-sm" id="offlineBtn" onclick="downloadOfflineBundle()" title="Скачать версию без зависимости от CDN — работает без интернета">
+      💾 Скачать офлайн-версию
+    </button>
+  </div>
 </div>
 
 <div class="layout">
@@ -431,23 +436,43 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
 // ═══════════════════════════════════════════════════════════
 //  Паттерны для извлечения данных из русских документов
 // ═══════════════════════════════════════════════════════════
+
+// Очистка мусора из выписок ЕГРЮЛ:
+// после каждого поля идёт "N ГРН и дата внесения в ЕГРЮЛ..."
+function cleanEgr(val) {
+  if (!val) return val;
+  val = val.replace(/\s*\d+\s+ГРН и дата.*$/i, '');
+  val = val.replace(/\s+\d{15,}.*$/, '');
+  return val.trim();
+}
+
+// Не принимать шаблонные слова-заглушки из бланков
+const PLACEHOLDER_WORDS = ['фамилия имя отчество', 'наименование организации', 'название компании'];
+function isPlaceholder(val) {
+  return PLACEHOLDER_WORDS.some(p => val.toLowerCase().trim() === p);
+}
+
 const FIELD_PATTERNS = [
   // Компания
   { key: 'COMPANY_FULL',  label: 'Полное наименование',
     patterns: [
       /(?:Полное наименование[^\n:]*)[:\s]+([^\n\r]+)/i,
       /(?:наименование юридического лица)[^\n:]*[:\s]+([^\n\r]+)/i,
-    ]
+    ],
+    postProcess: (m) => cleanEgr(m[1] || m[0])
   },
   { key: 'COMPANY_SHORT', label: 'Краткое наименование',
     patterns: [
-      /(?:Сокращ[а-яёА-ЯЁ]* наименование[^\n:]*)[:\s]+([^\n\r]+)/i,
-      /(ООО|ОАО|АО|ЗАО|ПАО)\s*[«""]([^»""]+)[»""]/,
-      /(ООО|ОАО|АО|ЗАО|ПАО)\s+"([^"]+)"/,
+      // Сначала ищем прямо название в кавычках — самый надёжный способ
+      /(ООО|ОАО|АО|ЗАО|ПАО)\s*[«""]([^»""]{1,60})[»""]/,
+      /(ООО|ОАО|АО|ЗАО|ПАО)\s+"([^"]{1,60})"/,
+      /(?:Сокращ[а-яёА-ЯЁ]*\s+наименование[^\n:]*)[:\s]+([^\n\r]+)/i,
     ],
     postProcess: (m, full) => {
-      if (full[1] && full[2]) return `${full[1]} "${full[2]}"`;
-      return full[0];
+      if (full[2] && ['ООО','АО','ЗАО','ОАО','ПАО'].includes(full[1])) {
+        return `${full[1]} "${full[2]}"`;
+      }
+      return cleanEgr(full[1] || full[0]);
     }
   },
   { key: 'INN',           label: 'ИНН',
@@ -475,8 +500,10 @@ const FIELD_PATTERNS = [
   },
   { key: 'LEGAL_ADDRESS', label: 'Юридический адрес',
     patterns: [
-      /(?:Юридический адрес|адрес[^\n:]*нахождения)[:\s]+([^\n\r]+)/i,
-    ]
+      /(?:Юридический адрес|адрес[^\n:]*нахождения[^\n:]*лица)[:\s]+([^\n\r]+)/i,
+      /(?:Место нахождения)[:\s]+([^\n\r]+)/i,
+    ],
+    postProcess: (m) => cleanEgr(m[1] || m[0])
   },
   { key: 'BANK',          label: 'Банк',
     patterns: [
@@ -497,12 +524,19 @@ const FIELD_PATTERNS = [
       /(?:Кор[рр]?\.\s*счет|К\/с)[:\s]+(\d{20})/i,
     ]
   },
-  // Директор
+  // Директор — поддержка формата ЕГРЮЛ (Фамилия / Имя / Отчество — три отдельных поля)
   { key: 'FIO',           label: 'ФИО руководителя',
     patterns: [
-      /(?:Генеральный директор|Генди[рр]|Директор|Руководитель)[^\n:]*[:\s]+([А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+)/,
-      /(?:ФИО|Фамилия\s+Имя\s+Отчество)[^\n:]*[:\s]+([А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+)/,
-    ]
+      /(?:Генеральный директор|Генди[рр]|Директор|Руководитель)[^\n:]*[:\s]+([А-ЯЁ][а-яё]+-?[А-ЯЁ]?[а-яё]*\s+[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+)/,
+      /(?:ФИО руководителя)[^\n:]*[:\s]+([А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+)/i,
+      /Фамилия\s+([А-ЯЁ][а-яё]+)\s+Имя\s+([А-ЯЁ][а-яё]+)\s+Отчество\s+([А-ЯЁ][а-яё]+)/,
+    ],
+    postProcess: (m, full) => {
+      if (full[3]) return `${full[1]} ${full[2]} ${full[3]}`;
+      const val = full[1] || full[0];
+      if (isPlaceholder(val)) return null;
+      return val;
+    }
   },
   { key: 'DOB',           label: 'Дата рождения',
     patterns: [
@@ -540,7 +574,8 @@ const FIELD_PATTERNS = [
   { key: 'REG_ADDRESS',   label: 'Адрес регистрации',
     patterns: [
       /(?:Адрес регистрации|Адрес по прописке|место жительства)[:\s]+([^\n\r]+)/i,
-    ]
+    ],
+    postProcess: (m) => cleanEgr(m[1] || m[0])
   },
 ];
 
@@ -581,8 +616,9 @@ function extractFromText(text) {
     for (const pattern of field.patterns) {
       const m = text.match(pattern);
       if (m) {
-        let val = field.postProcess ? field.postProcess(m[0], m) : (m[1] || m[0]);
-        val = val.trim().replace(/\s+/g, ' ');
+        let val = field.postProcess ? field.postProcess(m, m) : (m[1] || m[0]);
+        if (val === null || val === undefined) break; // postProcess отклонил
+        val = String(val).trim().replace(/\s+/g, ' ');
         if (val.length > 1) {
           extracted[field.key] = { value: val, auto: true, label: field.label };
           break;
@@ -879,6 +915,76 @@ function escHtml(s) {
 }
 function escXml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&apos;');
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Офлайн-бандл: встроить CDN-библиотеки прямо в HTML
+// ═══════════════════════════════════════════════════════════
+async function downloadOfflineBundle() {
+  const btn = document.getElementById('offlineBtn');
+  const origText = btn.innerHTML;
+  btn.disabled = true;
+
+  const CDN = [
+    { url: 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',           label: 'JSZip' },
+    { url: 'https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js', label: 'mammoth.js' },
+    { url: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',           label: 'pdf.js' },
+    { url: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',    label: 'pdf.worker' },
+  ];
+
+  try {
+    const scripts = {};
+    for (const lib of CDN) {
+      btn.innerHTML = `⏳ Загружаю ${lib.label}…`;
+      const r = await fetch(lib.url);
+      if (!r.ok) throw new Error(`Не удалось загрузить ${lib.label} (${r.status})`);
+      scripts[lib.url] = await r.text();
+    }
+
+    btn.innerHTML = '⏳ Собираю файл…';
+
+    // Берём текущий HTML из DOM
+    let html = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+
+    // Заменяем каждый <script src="CDN"> на <script>код</script>
+    for (const lib of CDN.slice(0, 3)) { // jszip, mammoth, pdfjs (не worker)
+      const srcTag = new RegExp(
+        `<script\\s+src="${lib.url.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}"><\\/script>`,
+        'g'
+      );
+      html = html.replace(srcTag, `<script>\n${scripts[lib.url]}\n</script>`);
+    }
+
+    // pdf.worker встраиваем как Blob-URL прямо в код инициализации
+    const workerCode = scripts[CDN[3].url];
+    const workerInline = `
+// ── Встроенный pdf.worker (офлайн-версия) ──
+(function(){
+  const blob = new Blob([${JSON.stringify(workerCode)}], {type:'application/javascript'});
+  pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(blob);
+})();`.trim();
+
+    html = html.replace(
+      /pdfjsLib\.GlobalWorkerOptions\.workerSrc\s*=\s*['"][^'"]+['"];/,
+      workerInline
+    );
+
+    // Скачиваем
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = 'docfill_offline.html';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 3000);
+
+    btn.innerHTML = '✅ Готово! Файл сохранён';
+    setTimeout(() => { btn.disabled = false; btn.innerHTML = origText; }, 4000);
+
+  } catch (e) {
+    btn.innerHTML = `❌ ${e.message}`;
+    setTimeout(() => { btn.disabled = false; btn.innerHTML = origText; }, 5000);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════
